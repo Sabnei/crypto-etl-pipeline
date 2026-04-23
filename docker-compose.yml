@@ -1,0 +1,92 @@
+version: '3.8'
+
+x-airflow-common:
+  # Bloque reutilizable para los servicios de Airflow
+  &airflow-common
+  build: . # Usa nuestro Dockerfile personalizado
+  env_file:
+    - .env
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+  volumes:
+    - ./dags:/opt/airflow/dags # Airflow lee tus DAGs desde aquí
+    - ./etl:/opt/airflow/etl # Tu lógica ETL disponible en el container
+    - ./logs:/opt/airflow/logs
+  depends_on:
+    postgres-airflow:
+      condition: service_healthy
+
+services:
+
+  # ── Base de datos INTERNA de Airflow ──────────────
+  postgres-airflow:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres_airflow_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "airflow" ]
+      interval: 5s
+      retries: 5
+
+  # ── Tu base de datos con datos crypto ─────────────
+  postgres-etl:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: etl_user
+      POSTGRES_PASSWORD: etlpassword123
+      POSTGRES_DB: crypto_etl
+    ports:
+      - "5433:5432" # Puerto 5433 en tu máquina → 5432 en el container
+    volumes:
+      - postgres_etl_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d # Ejecuta create_tables.sql al iniciar
+
+  # ── Airflow: inicializa la base de datos (corre 1 sola vez) ──
+  airflow-init:
+    <<: *airflow-common
+    command: >
+      bash -c "airflow db migrate &&
+               airflow users create
+               --username $$_AIRFLOW_WWW_USER_USERNAME
+               --password $$_AIRFLOW_WWW_USER_PASSWORD
+               --firstname Admin --lastname User
+               --role Admin --email admin@example.com"
+    restart: "no"
+
+  # ── Airflow: interfaz web ─────────────────────────
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    restart: always
+
+  # ── Airflow: scheduler (ejecuta los DAGs) ─────────
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: always
+  
+  # ── Interfaz visual para Postgres ──────────────────
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin_container
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres-airflow
+      - postgres-etl
+    restart: always
+
+volumes:
+  postgres_airflow_data:
+  postgres_etl_data:
