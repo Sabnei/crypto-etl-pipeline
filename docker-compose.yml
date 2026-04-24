@@ -8,7 +8,7 @@ x-airflow-common:
     - .env
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@postgres-airflow/${AIRFLOW_DB_NAME}
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
   volumes:
     - ./dags:/opt/airflow/dags # Airflow lee tus DAGs desde aquí
@@ -24,9 +24,9 @@ services:
   postgres-airflow:
     image: postgres:15
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
+      POSTGRES_USER: ${AIRFLOW_DB_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+      POSTGRES_DB: ${AIRFLOW_DB_NAME}
     volumes:
       - postgres_airflow_data:/var/lib/postgresql/data
     healthcheck:
@@ -38,9 +38,9 @@ services:
   postgres-etl:
     image: postgres:15
     environment:
-      POSTGRES_USER: etl_user
-      POSTGRES_PASSWORD: etlpassword123
-      POSTGRES_DB: crypto_etl
+      POSTGRES_USER: ${ETL_DB_USER}
+      POSTGRES_PASSWORD: ${ETL_DB_PASSWORD}
+      POSTGRES_DB: ${ETL_DB_NAME}
     ports:
       - "5433:5432" # Puerto 5433 en tu máquina → 5432 en el container
     volumes:
@@ -78,8 +78,8 @@ services:
     image: dpage/pgadmin4
     container_name: pgadmin_container
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@admin.com
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
     ports:
       - "5050:80"
     depends_on:
