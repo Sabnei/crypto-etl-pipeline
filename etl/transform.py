@@ -30,16 +30,15 @@ def transform_data(raw_data):
     df = pd.DataFrame(raw_data)
 
     # Select and rename columns based on the mapping
-    df = df[list(COLUMNS_MAP.keys())]
-    df = df.rename(columns=COLUMNS_MAP)
+    df = df[list(COLUMNS_MAP.keys())].rename(columns=COLUMNS_MAP)
 
     # Convert API timestamp to datetime objects
-    df["last_updated_api"] = pd.to_datetime(df["last_updated_api"])
+    df["last_updated_api"] = pd.to_datetime(df["last_updated_api"]).dt.strftime('%Y-%m-%dT%H:%M:%S%z')
 
     # Ensure data integrity by removing rows missing essential values
     df = df.dropna(subset=["coin_id", "price_usd", "market_cap_usd"])
 
     # Audit column: record when the data was extracted (UTC)
-    df["extracted_at"] = pd.Timestamp.now(tz="UTC")
+    df["extracted_at"] = pd.Timestamp.now(tz="UTC").strftime('%Y-%m-%dT%H:%M:%S%z')
 
     return df
