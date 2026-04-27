@@ -1,68 +1,106 @@
 import os
 import pandas as pd
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
 
 def get_engine():
     """
-    Create a SQLAlchemy engine for PostgreSQL using environment variables.
+    Create a SQLAlchemy engine for Azure PostgreSQL Flexible Server.
+
+    Reads connection params from environment variables injected by Docker.
+    SSL is required by Azure PostgreSQL — the connect_args enforce it.
 
     Returns:
-        sqlalchemy.engine.Engine: SQLAlchemy engine object if successful, None otherwise.
+        sqlalchemy.engine.Engine or None
     """
     try:
-        user = os.getenv("ETL_DB_USER")
-        password = os.getenv("ETL_DB_PASSWORD")
-        host = os.getenv("ETL_DB_HOST")
-        port = os.getenv("ETL_DB_PORT")
-        dbname = os.getenv("ETL_DB_NAME")
+        user     = os.environ["ETL_DB_USER"]
+        password = os.environ["ETL_DB_PASSWORD"]
+        host     = os.environ["ETL_DB_HOST"]
+        port     = os.environ.get("ETL_DB_PORT", "5432")
+        dbname   = os.environ["ETL_DB_NAME"]
 
-        # Connection string: postgresql://user:password@host:port/dbname
-        connection_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+        connection_string = (
+            f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}"
+        )
 
-        return create_engine(connection_string)
-    except SQLAlchemyError as e:
-        print(f"Error creating SQLAlchemy engine: {e}")
+        # Azure PostgreSQL Flexible Server requiere SSL obligatoriamente
+        engine = create_engine(
+            connection_string,
+            connect_args={"sslmode": "require"},
+        )
+        return engine
+
+    except KeyError as e:
+        print(f"Missing environment variable: {e}")
         return None
-    
-def load_data(df):
+    except SQLAlchemyError as e:
+        print(f"Error creating engine: {e}")
+        return None
+
+
+def ensure_schema(engine, schema: str):
     """
-    Persists DataFrame records into the PostgreSQL database using pandas to_sql.
-    
-    This method leverages SQLAlchemy for a more efficient and cleaner insertion
-    process compared to manual cursor execution.
+    Creates the schema if it doesn't exist yet.
+    Safe to call on every run — CREATE SCHEMA IF NOT EXISTS is idempotent.
 
     Args:
-        df (pandas.DataFrame): Dataframe containing cleaned crypto data.
+        engine: SQLAlchemy engine
+        schema: schema name (e.g. "crypto")
+    """
+    with engine.begin() as conn:
+        conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+    print(f"Schema '{schema}' is ready.")
+
+
+def load_data(df: pd.DataFrame):
+    """
+    Persists a cleaned DataFrame into Azure PostgreSQL under the project schema.
+
+    The schema is read from ETL_DB_SCHEMA env var (default: "crypto").
+    This lets each project write to its own isolated schema on the same server:
+        crypto   → crypto.crypto_prices
+        weather  → weather.observations
+        ...
+
+    Args:
+        df: cleaned DataFrame from transform step
     """
     if df.empty:
         print("No data to load: DataFrame is empty.")
         return
-    
+
+    schema = os.environ.get("ETL_DB_SCHEMA", "crypto")
+
     engine = get_engine()
     if engine is None:
-        print("Skipping data load: Could not create database engine.")
+        print("Skipping load: could not create engine.")
         return
-    
+
     try:
-        # if_exists='append' ensures we add new rows without dropping the table
-        # method='multi' improves performance by sending multiple rows in one INSERT
-        # index=False prevents pandas from adding the DF index as a column
+        # Garantiza que el schema existe antes de insertar
+        ensure_schema(engine, schema)
+
         df.to_sql(
-            name='crypto_prices', 
-            con=engine, 
-            if_exists='append', 
-            index=False, 
-            method='multi'
+            name="crypto_prices",
+            schema=schema,          # <- apunta al schema del proyecto
+            con=engine,
+            if_exists="append",
+            index=False,
+            method="multi",
         )
-        print(f"Successfully loaded {len(df)} rows into 'crypto_prices' table using to_sql.")
+        print(
+            f"Loaded {len(df)} rows into '{schema}.crypto_prices' "
+            f"on {os.environ['ETL_DB_HOST']}"
+        )
 
     except SQLAlchemyError as e:
-        print(f"SQLAlchemy error during data insertion: {e}")
+        print(f"SQLAlchemy error: {e}")
+        raise  # Re-raise para que Airflow marque la task como failed
     except Exception as e:
-        print(f"Unexpected error during load: {e}")
+        print(f"Unexpected error: {e}")
+        raise
     finally:
-        # Engine disposal is good practice to release connection pool resources
         engine.dispose()
-        print("Database connection closed.")
+        print("Engine disposed.")

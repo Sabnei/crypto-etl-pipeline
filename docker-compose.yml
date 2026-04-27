@@ -1,18 +1,18 @@
 version: '3.8'
 
 x-airflow-common:
-  # Bloque reutilizable para los servicios de Airflow
   &airflow-common
-  build: . # Usa nuestro Dockerfile personalizado
+  build: .
   env_file:
     - .env
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    # Airflow guarda su estado en postgres-airflow (contenedor local)
+    # Tu data de crypto va a Azure PostgreSQL via ETL_DB_* del .env
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@postgres-airflow/${AIRFLOW_DB_NAME}
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
   volumes:
-    - ./dags:/opt/airflow/dags # Airflow lee tus DAGs desde aquí
-    - ./etl:/opt/airflow/etl # Tu lógica ETL disponible en el container
+    - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
   depends_on:
     postgres-airflow:
@@ -20,7 +20,7 @@ x-airflow-common:
 
 services:
 
-  # ── Base de datos INTERNA de Airflow ──────────────
+  # ── DB interna de Airflow (solo metadatos, no tus datos) ──────────
   postgres-airflow:
     image: postgres:15
     environment:
@@ -30,36 +30,23 @@ services:
     volumes:
       - postgres_airflow_data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD", "pg_isready", "-U", "airflow" ]
+      test: ["CMD", "pg_isready", "-U", "${AIRFLOW_DB_USER}"]
       interval: 5s
       retries: 5
 
-  # ── Tu base de datos con datos crypto ─────────────
-  postgres-etl:
-    image: postgres:15
-    environment:
-      POSTGRES_USER: ${ETL_DB_USER}
-      POSTGRES_PASSWORD: ${ETL_DB_PASSWORD}
-      POSTGRES_DB: ${ETL_DB_NAME}
-    ports:
-      - "5433:5432" # Puerto 5433 en tu máquina → 5432 en el container
-    volumes:
-      - postgres_etl_data:/var/lib/postgresql/data
-      - ./sql:/docker-entrypoint-initdb.d # Ejecuta create_tables.sql al iniciar
-
-  # ── Airflow: inicializa la base de datos (corre 1 sola vez) ──
+  # ── Airflow: inicializa la DB y crea el usuario admin ─────────────
   airflow-init:
     <<: *airflow-common
     command: >
-      bash -c "airflow db migrate && 
-      airflow users create 
-      --username ${_AIRFLOW_WWW_USER_USERNAME} 
-      --password ${_AIRFLOW_WWW_USER_PASSWORD} 
-      --firstname Admin --lastname User 
-      --role Admin --email admin@example.com"
+      bash -c "airflow db migrate &&
+      airflow users create
+      --username ${_AIRFLOW_WWW_USER_USERNAME}
+      --password ${_AIRFLOW_WWW_USER_PASSWORD}
+      --firstname ${_AIRFLOW_WWW_USER_FIRSTNAME} --lastname ${_AIRFLOW_WWW_USER_LASTNAME}
+      --role Admin --email ${_AIRFLOW_WWW_USER_EMAIL}"
     restart: "no"
 
-  # ── Airflow: interfaz web ─────────────────────────
+  # ── Airflow: interfaz web en puerto 8080 ─────────────────────────
   airflow-webserver:
     <<: *airflow-common
     command: webserver
@@ -67,26 +54,24 @@ services:
       - "8080:8080"
     restart: always
 
-  # ── Airflow: scheduler (ejecuta los DAGs) ─────────
+  # ── Airflow: scheduler que dispara los DAGs ───────────────────────
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
     restart: always
-  
-  # ── Interfaz visual para Postgres ──────────────────
+
+  # ── pgAdmin para visualizar Azure PostgreSQL desde el browser ─────
   pgadmin:
     image: dpage/pgadmin4
-    container_name: pgadmin_container
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
     ports:
       - "5050:80"
-    depends_on:
-      - postgres-airflow
-      - postgres-etl
     restart: always
+
+# postgres-etl YA NO ESTÁ: fue reemplazado por Azure PostgreSQL Flexible Server
+# Todos los datos de proyectos van a: ETL_DB_HOST del .env
 
 volumes:
   postgres_airflow_data:
-  postgres_etl_data:
